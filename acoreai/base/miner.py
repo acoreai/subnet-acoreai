@@ -28,7 +28,6 @@ from acoreai.utils.config import add_miner_args
 
 from typing import Union
 
-
 class BaseMinerNeuron(BaseNeuron):
     """
     Base class for Bittensor miners.
@@ -54,17 +53,19 @@ class BaseMinerNeuron(BaseNeuron):
                 "You are allowing non-registered entities to send requests to your miner. This is a security risk."
             )
         # The axon handles request processing, allowing validators to send this miner requests.
-        self.axon = bt.axon(
-            wallet=self.wallet,
-            config=self.config() if callable(self.config) else self.config,
-        )
+        self.axon = bt.axon(wallet=self.wallet, config=self.config() if callable(self.config) else self.config)
 
         # Attach determiners which functions are called when servicing a request.
         bt.logging.info(f"Attaching forward function to miner axon.")
         self.axon.attach(
-            forward_fn=self.forward,
-            blacklist_fn=self.blacklist,
-            priority_fn=self.priority,
+            forward_fn=self.forward_text,
+            blacklist_fn=self.blacklist_text,
+        ).attach(
+            forward_fn=self.forward_image,
+            blacklist_fn=self.blacklist_image,
+        ).attach(
+            forward_fn=self.forward_status,
+            blacklist_fn=self.blacklist_status,
         )
         bt.logging.info(f"Axon created: {self.axon}")
 
@@ -128,6 +129,8 @@ class BaseMinerNeuron(BaseNeuron):
 
                 # Sync metagraph and potentially set weights.
                 self.sync()
+                # print("Miner sync error. Pausing for 10 seconds to reconnect.")
+                time.sleep(10)
                 self.step += 1
 
         # If someone intentionally stops the miner, it'll safely terminate operations.
@@ -190,7 +193,8 @@ class BaseMinerNeuron(BaseNeuron):
 
     def resync_metagraph(self):
         """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
-        bt.logging.info("resync_metagraph()")
+        # bt.logging.info("resync_metagraph()")
 
         # Sync the metagraph.
-        self.metagraph.sync(subtensor=self.subtensor)
+        # self.metagraph.sync(subtensor=self.subtensor)
+        # bt.logging.debug("metagraph", self.metagraph.last_update[self.uid])

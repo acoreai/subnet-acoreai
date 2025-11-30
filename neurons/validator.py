@@ -1,34 +1,21 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# TODO(developer): Set your name
-# Copyright © 2023 <your name>
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
-
 import time
-
+from typing import Tuple
 # Bittensor
 import bittensor as bt
 
 # import base validator class which takes care of most of the boilerplate
 from acoreai.base.validator import BaseValidatorNeuron
-
 # Bittensor Validator Template:
-from acoreai.validator import forward
+from acoreai.validator import forward_synthetic, forward_organic
+from acoreai.protocol import NATextSynapse
+from acoreai.validator.task_manager import TaskManager
+from acoreai.validator.miner_manager import MinerManager
+from acoreai.validator.wandb_manager import WandbManager
+import os
+from dotenv import load_dotenv
+from acoreai.protocol import NAStatus
 
+load_dotenv()
 
 class Validator(BaseValidatorNeuron):
     """
@@ -38,16 +25,21 @@ class Validator(BaseValidatorNeuron):
 
     This class provides reasonable default behavior for a validator such as keeping a moving average of the scores of the miners and using them to set weights at the end of each epoch. Additionally, the scores are reset for new hotkeys at the end of each epoch.
     """
-
+    
     def __init__(self, config=None):
         super(Validator, self).__init__(config=config)
-
+        
         bt.logging.info("load_state()")
         self.load_state()
+        self.task_manager = TaskManager()
+        self.miner_manager = MinerManager(validator=self)
+        self.wandb_manager = WandbManager(validator=self)
+        self.owner_hotkey = os.getenv("OWNER_HOTKEY", None)
+        bt.logging.info(f"Validator Spec Version: {self.spec_version}")
 
         # TODO(developer): Anything specific to your use case you can do here
 
-    async def forward(self):
+    async def forward_synthetic(self, synapse: NATextSynapse=None):
         """
         Validator forward pass. Consists of:
         - Generating the query
@@ -56,13 +48,64 @@ class Validator(BaseValidatorNeuron):
         - Rewarding the miners
         - Updating the scores
         """
-        # TODO(developer): Rewrite this function based on your protocol definition.
-        return await forward(self)
+        return await forward_synthetic(self, synapse)
 
+    async def forward_organic(self, synapse: NATextSynapse=None):
+        """
+        Validator forward pass. Consists of:
+        - Generating the query
+        - Querying the miners
+        - Getting the responses
+        - Rewarding the miners
+        - Updating the scores
+        """
+        return await forward_organic(self, synapse)
+    
+    async def forward_fn(self, synapse: NATextSynapse=None):
+        time.sleep(5)
+        return await self.forward_organic(synapse)
+
+    async def forward_status(self, synapse: NAStatus) -> NAStatus:
+        
+        bt.logging.info(f"Current Validator Status: {self.status}")
+        synapse.status = self.status
+        if synapse.sn_version > self.spec_version:
+            bt.logging.warning(
+                "Current subnet version is older than validator subnet version. Please update the miner!"
+            )
+        elif synapse.sn_version < self.spec_version:
+            bt.logging.warning(
+                "Current subnet version is higher than validator subnet version. You can ignore this warning!"
+            )
+            
+        return synapse
+
+    async def whitelist_fn_query(self, synapse: NATextSynapse) -> Tuple[bool, str]:
+        owner_hotkey = self.owner_hotkey
+        if synapse.dendrite and synapse.dendrite.hotkey == owner_hotkey:
+            return False, ""
+        return True, "The dendrite missed hotkey or not the owner's hotkey"
+
+    async def whitelist_fn_status(self, synapse: NAStatus) -> Tuple[bool, str]:
+        bt.logging.debug("............................ checking whitelist for organic synapse ............................")
+        owner_hotkey = self.owner_hotkey
+        if synapse.dendrite and synapse.dendrite.hotkey == owner_hotkey:
+            bt.logging.debug("Received a request from legit owner hotkey.")
+            return False, ""
+        bt.logging.debug("Recieved a request from unauthorized  owner hotkey.")
+        return True, "The dendrite missed hotkey or not the owner's hotkey"
+
+    async def priority_fn_query(self, synapse: NATextSynapse) -> float:
+        # high priority for organic traffic
+        return 1000000.0
+
+    async def priority_fn_status(self, synapse: NAStatus) -> float:
+        # high priority for organic traffic
+        return 1000000.0
 
 # The main function parses the configuration and runs the validator.
 if __name__ == "__main__":
     with Validator() as validator:
         while True:
             bt.logging.info(f"Validator running... {time.time()}")
-            time.sleep(5)
+            time.sleep(600)

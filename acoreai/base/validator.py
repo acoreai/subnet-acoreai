@@ -24,15 +24,14 @@ import asyncio
 import argparse
 import threading
 import bittensor as bt
+import math
+from collections import Counter
 
 from typing import List, Union
 from traceback import print_exception
 
 from acoreai.base.neuron import BaseNeuron
-from acoreai.base.utils.weight_utils import (
-    process_weights_for_netuid,
-    convert_weights_and_uids_for_emit,
-)  # TODO: Replace when bittensor switches to numpy
+from acoreai.base.utils.weight_utils import process_weights_for_netuid, convert_weights_and_uids_for_emit  # TODO: Replace when bittensor switches to numpy
 from acoreai.mock import MockDendrite
 from acoreai.utils.config import add_validator_args
 
@@ -55,6 +54,8 @@ class BaseValidatorNeuron(BaseNeuron):
         # Save a copy of the hotkeys to local memory.
         self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
+        self.status = "idle"
+        
         # Dendrite lets us send messages to other nodes (axons) in the network.
         if self.config.mock:
             self.dendrite = MockDendrite(wallet=self.wallet)
@@ -64,7 +65,12 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Set up initial scoring weights for validation
         bt.logging.info("Building validation weights.")
-        self.scores = np.zeros(self.metagraph.n, dtype=np.float32)
+        self.base_scores = np.zeros(
+            self.metagraph.n, dtype=np.float32
+        )
+        self.scores = np.zeros(
+            self.metagraph.n, dtype=np.float32
+        )
 
         # Init sync with the network. Updates the metagraph.
         self.sync()
@@ -91,11 +97,19 @@ class BaseValidatorNeuron(BaseNeuron):
         try:
             self.axon = bt.axon(wallet=self.wallet, config=self.config)
 
+            self.axon.attach(
+                forward_fn=self.forward_fn,
+                blacklist_fn=self.whitelist_fn_query,
+                priority_fn=self.priority_fn_query,
+            ).attach(
+                forward_fn=self.forward_status,
+                blacklist_fn=self.whitelist_fn_status,
+                priority_fn=self.priority_fn_status,
+            )
+            
             try:
-                self.subtensor.serve_axon(
-                    netuid=self.config.netuid,
-                    axon=self.axon,
-                )
+                self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
+                self.axon.start()
                 bt.logging.info(
                     f"Running validator {self.axon} on network: {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
                 )
@@ -111,10 +125,10 @@ class BaseValidatorNeuron(BaseNeuron):
 
     async def concurrent_forward(self):
         coroutines = [
-            self.forward()
+            self.forward_synthetic()
             for _ in range(self.config.neuron.num_concurrent_forwards)
         ]
-        await asyncio.gather(*coroutines)
+        await asyncio.gather(*coroutines, return_exceptions=True)
 
     def run(self):
         """
@@ -142,12 +156,16 @@ class BaseValidatorNeuron(BaseNeuron):
         bt.logging.info(f"Validator starting at block: {self.block}")
 
         # This loop maintains the validator's operations until intentionally stopped.
-        try:
-            while True:
-                bt.logging.info(f"step({self.step}) block({self.block})")
+        while True:
+            try:
+                # bt.logging.info(f"step({self.step}) block({self.block}) last_update({self.metagraph.last_update[self.uid]})")
 
-                # Run multiple forwards concurrently.
-                self.loop.run_until_complete(self.concurrent_forward())
+                # Run forward.
+                try:
+                    self.loop.run_until_complete(self.concurrent_forward())
+                except Exception as err:
+                    bt.logging.error(f"Error during validation: {str(err)}")
+                    bt.logging.debug(str(print_exception(type(err), err, err.__traceback__)))
 
                 # Check if we should exit.
                 if self.should_exit:
@@ -158,18 +176,18 @@ class BaseValidatorNeuron(BaseNeuron):
 
                 self.step += 1
 
-        # If someone intentionally stops the validator, it'll safely terminate operations.
-        except KeyboardInterrupt:
-            self.axon.stop()
-            bt.logging.success("Validator killed by keyboard interrupt.")
-            exit()
+            # If someone intentionally stops the validator, it'll safely terminate operations.
+            except KeyboardInterrupt:
+                self.axon.stop()
+                bt.logging.success("Validator killed by keyboard interrupt.")
+                exit()
 
-        # In case of unforeseen errors, the validator will log the error and continue operations.
-        except Exception as err:
-            bt.logging.error(f"Error during validation: {str(err)}")
-            bt.logging.debug(
-                str(print_exception(type(err), err, err.__traceback__))
-            )
+            # In case of unforeseen errors, the validator will log the error and continue operations.
+            except Exception as err:
+                bt.logging.error(f"Error during validation: {str(err)}")
+                bt.logging.debug(
+                    str(print_exception(type(err), err, err.__traceback__))
+                )
 
     def run_in_background_thread(self):
         """
@@ -223,6 +241,29 @@ class BaseValidatorNeuron(BaseNeuron):
         """
         Sets the validator weights to the metagraph hotkeys based on the scores it has received from the miners. The weights determine the trust and incentive level the validator assigns to miner nodes on the network.
         """
+        # Create a list of (id, score) pairs
+        bt.logging.info(f"base_scores: {self.base_scores}")
+        id_score_pairs = list(enumerate(self.base_scores))
+        
+        sorted_pairs = sorted(id_score_pairs, key=lambda x: x[1], reverse=True)
+        
+        # Calculate ranks (handling ties)
+        ranks = []
+        current_rank = 1
+        previous_score = None
+        for i, (id, score) in enumerate(sorted_pairs):
+            if score != previous_score:
+                current_rank = i
+            ranks.append((id, current_rank, score))
+            previous_score = score
+        
+        # Sort back to original order
+        ranks.sort(key=lambda x: x[0])
+        
+        # self.scores = [(math.exp(-0.03 * rank) if score > 0 else 0) for id, rank, score in ranks]
+        self.scores = [(score ** 8 if score > 4e-1 else 0) for score in self.base_scores]
+        
+        bt.logging.info(f"scores: {self.scores}")
 
         # Check if self.scores contains any NaN values and log a warning if it does.
         if np.isnan(self.scores).any():
@@ -317,6 +358,18 @@ class BaseValidatorNeuron(BaseNeuron):
         # Update the hotkeys.
         self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
+    def check_serving_axon(self, metagraph: "bt.metagraph.Metagraph", uid: int, vpermit_tao_limit: int) -> bool:
+        # Filter non serving axons.
+        if metagraph.validator_permit[uid]:
+            if metagraph.S[uid] >= vpermit_tao_limit:
+                return True
+            
+        if not metagraph.axons[uid].is_serving:
+            return False
+        # Available otherwise.
+        return True
+
+
     def update_scores(self, rewards: np.ndarray, uids: List[int]):
         """Performs exponential moving average on the scores based on the rewards received from the miners."""
 
@@ -338,50 +391,78 @@ class BaseValidatorNeuron(BaseNeuron):
         # Handle edge case: If either rewards or uids_array is empty.
         if rewards.size == 0 or uids_array.size == 0:
             bt.logging.info(f"rewards: {rewards}, uids_array: {uids_array}")
-            bt.logging.warning(
-                "Either rewards or uids_array is empty. No updates will be performed."
-            )
+            bt.logging.warning("Either rewards or uids_array is empty. No updates will be performed.")
             return
 
         # Check if sizes of rewards and uids_array match.
         if rewards.size != uids_array.size:
-            raise ValueError(
-                f"Shape mismatch: rewards array of shape {rewards.shape} "
-                f"cannot be broadcast to uids array of shape {uids_array.shape}"
-            )
+            raise ValueError(f"Shape mismatch: rewards array of shape {rewards.shape} "
+                             f"cannot be broadcast to uids array of shape {uids_array.shape}")
 
         # Compute forward pass rewards, assumes uids are mutually exclusive.
         # shape: [ metagraph.n ]
-        scattered_rewards: np.ndarray = np.zeros_like(self.scores)
-        scattered_rewards[uids_array] = rewards
-        bt.logging.debug(f"Scattered rewards: {rewards}")
+        uids_list = self.metagraph.uids.tolist()
 
-        # Update scores with rewards produced by this step.
+        # Calculate how many elements to add
+        count_to_add = len(uids_list) - len(self.base_scores)
+
+        # Extend base_scores if needed
+        if count_to_add > 0:
+            additional_zeros = np.zeros(count_to_add, dtype=np.float32)
+            # Concatenate the two arrays
+            self.base_scores = np.concatenate((self.base_scores, additional_zeros))
+
+        # Create list of non-serving UIDs
+        non_serving_uids = []
+        for uid in range(self.metagraph.n.item()):
+            if not self.check_serving_axon(self.metagraph, uid, self.config.neuron.vpermit_tao_limit):
+                non_serving_uids.append(uid)
+        
+        bt.logging.debug("Giving penalty scores to non-serving uids...")
+        bt.logging.debug(f"Non-serving uids: {non_serving_uids}")
+
+        # Initialize scattered rewards
+        scattered_rewards: np.ndarray = np.full_like(self.base_scores, -1)
+        scattered_rewards[uids_array] = rewards
+        
+        # Apply zero scores to non-serving miners
+        scattered_rewards[non_serving_uids] = 0
+        bt.logging.debug(f"Final rewards (including penalties): {scattered_rewards}")
+
+        # Update base_scores with rewards produced by this step.
         # shape: [ metagraph.n ]
         alpha: float = self.config.neuron.moving_average_alpha
-        self.scores: np.ndarray = (
-            alpha * scattered_rewards + (1 - alpha) * self.scores
-        )
-        bt.logging.debug(f"Updated moving avg scores: {self.scores}")
+        for i in range(len(self.base_scores)):
+            if scattered_rewards[i] != -1:
+                self.base_scores[i] = alpha * (0 if scattered_rewards[i] < 0.1 else scattered_rewards[i]) + (1 - alpha) * self.base_scores[i]
+
+        self.base_scores = np.where(self.base_scores < 4e-2, 0, self.base_scores)
+        
+        bt.logging.info(f"Updated moving avg base_scores: {self.base_scores}")
 
     def save_state(self):
         """Saves the state of the validator to a file."""
         bt.logging.info("Saving validator state.")
 
         # Save the state of the validator to file.
+        # self.base_scores = np.where(self.base_scores < 1e-3, 0, self.base_scores)
         np.savez(
             self.config.neuron.full_path + "/state.npz",
             step=self.step,
-            scores=self.scores,
+            scores=self.base_scores,
             hotkeys=self.hotkeys,
         )
 
     def load_state(self):
         """Loads the state of the validator from a file."""
-        bt.logging.info("Loading validator state.")
 
         # Load the state of the validator from file.
-        state = np.load(self.config.neuron.full_path + "/state.npz")
-        self.step = state["step"]
-        self.scores = state["scores"]
-        self.hotkeys = state["hotkeys"]
+        try:
+            state = np.load(self.config.neuron.full_path + "/state.npz")
+            bt.logging.info(f"Loading validator state.{state['scores']}")
+            self.step = state["step"]
+            for i in range(len(state["scores"])):
+                self.base_scores[i] = float(state["scores"][i])
+            self.hotkeys = state["hotkeys"]
+        except Exception as e:
+            print("Couldn't find save file!")

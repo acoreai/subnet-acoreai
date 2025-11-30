@@ -1,6 +1,5 @@
-from binascii import unhexlify
-
 from substrateinterface import Keypair
+from binascii import unhexlify
 
 
 def main(args):
@@ -17,8 +16,6 @@ def main(args):
     keypair = Keypair(ss58_address=address, ss58_format=42)
 
     message = file_split[0]
-    if not message.startswith("<Bytes>") or not message.endswith("</Bytes>"):
-        raise ValueError("Message is not properly wrapped in <Bytes>.")
 
     signature_line = file_split[2]
     signature_prefix = "Signature: "
@@ -39,8 +36,6 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Verify a signature")
-    parser.add_argument(
-        "--file", help="The file containing the message and signature"
-    )
+    parser.add_argument("--file", help="The file containing the message and signature")
     args = parser.parse_args()
     main(args)

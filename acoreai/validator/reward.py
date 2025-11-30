@@ -19,37 +19,35 @@
 import numpy as np
 from typing import List
 import bittensor as bt
+from acoreai.protocol import NATextSynapse
 
-
-def reward(query: int, response: int) -> float:
-    """
-    Reward the miner response to the dummy request. This method returns a reward
-    value for the miner, which is used to update the miner's score.
-
-    Returns:
-    - float: The reward value for the miner.
-    """
-    bt.logging.info(
-        f"In rewards, query val: {query}, response val: {response}, rewards val: {1.0 if response == query * 2 else 0}"
-    )
-    return 1.0 if response == query * 2 else 0
-
-
-def get_rewards(
-    self,
-    query: int,
-    responses: List[float],
-) -> np.ndarray:
-    """
-    Returns an array of rewards for the given query and responses.
-
-    Args:
-    - query (int): The query sent to the miner.
-    - responses (List[float]): A list of responses from the miner.
-
-    Returns:
-    - np.ndarray: An array of rewards for the given query and responses.
-    """
+def get_rewards(responses: List,  all_uids: List,  for_uids: List) -> np.ndarray:
     # Get all the reward results by iteratively calling your reward() function.
+    # Cast response to int as the reward function expects an int type for response.
+    
+    # Remove any None values
+    # responses = [response for response in responses if response.out_obj is not "obj"]
+    return np.array(
+        [responses[for_uids.index(uid)] if uid in for_uids else 0 for uid in all_uids]
+    )
 
-    return np.array([reward(query, response) for response in responses])
+def normalize(rewards):
+    """
+    Normalize the rewards to a range of [0, 1] and apply the transformation y = x^2.
+    
+    Args:
+        rewards (list): A list of reward values.
+    
+    Returns:
+        list: A list of transformed scores.
+    """
+    if len(rewards) == 0:
+        return []
+    
+    max_value = max(rewards)
+    if max_value == 0:
+        return [0 for _ in rewards] 
+
+    scores = [(x / max_value) ** 2 for x in rewards]
+    
+    return scores

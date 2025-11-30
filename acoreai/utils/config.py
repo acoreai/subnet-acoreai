@@ -1,33 +1,12 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 Opentensor Foundation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
 import os
 import subprocess
 import argparse
 import bittensor as bt
 from .logging import setup_events_logger
 
-
 def is_cuda_available():
     try:
-        output = subprocess.check_output(
-            ["nvidia-smi", "-L"], stderr=subprocess.STDOUT
-        )
+        output = subprocess.check_output(["nvidia-smi", "-L"], stderr=subprocess.STDOUT)
         if "NVIDIA" in output.decode("utf-8"):
             return "cuda"
     except Exception:
@@ -39,7 +18,6 @@ def is_cuda_available():
     except Exception:
         pass
     return "cpu"
-
 
 def check_config(cls, config: "bt.Config"):
     r"""Checks/validates the config namespace object."""
@@ -54,7 +32,7 @@ def check_config(cls, config: "bt.Config"):
             config.neuron.name,
         )
     )
-    print("full path:", full_path)
+    bt.logging.info(f"full path:, {full_path}")
     config.neuron.full_path = os.path.expanduser(full_path)
     if not os.path.exists(config.neuron.full_path):
         os.makedirs(config.neuron.full_path, exist_ok=True)
@@ -122,14 +100,13 @@ def add_args(cls, parser):
         help="Runs wandb in offline mode.",
         default=False,
     )
-
+    
     parser.add_argument(
-        "--wandb.notes",
+        "--validation.endpoint",
         type=str,
-        help="Notes to add to the wandb run.",
-        default="",
+        help="Validation endpoint url for scoring 3D assets.",
+        default="http://127.0.0.1:8094",
     )
-
 
 def add_miner_args(cls, parser):
     """Add miner specific arguments to the parser."""
@@ -168,7 +145,34 @@ def add_miner_args(cls, parser):
         default="opentensor-dev",
         help="Wandb entity to log to.",
     )
+    
+    parser.add_argument(
+        "--miner.concurrent_limit",
+        type=int,
+        default=1,
+        help="The limit that miner is able to generate concurrently"
+    )
+    
+    parser.add_argument(
+        "--miner.status",
+        type=str,
+        default="idle", #idle, working, waiting
+        help="Miners are able to work or not"
+    )
 
+    parser.add_argument(
+        "--generation.endpoint",
+        type=str,
+        help="Miner 3D Generation Endpoint",
+        default="http://127.0.0.1:8093",
+    )
+    
+    parser.add_argument(
+        "--miner.gen_interval",
+        type=int,
+        help="The interval to limit the number of requests",
+        default=700,
+    )
 
 def add_validator_args(cls, parser):
     """Add validator specific arguments to the parser."""
@@ -181,10 +185,10 @@ def add_validator_args(cls, parser):
     )
 
     parser.add_argument(
-        "--neuron.timeout",
+        "--neuron.task_period",
         type=float,
         help="The timeout for each forward call in seconds.",
-        default=10,
+        default=700,
     )
 
     parser.add_argument(
@@ -224,12 +228,19 @@ def add_validator_args(cls, parser):
         help="Set this flag to not attempt to serve an Axon.",
         default=False,
     )
+    
+    parser.add_argument(
+        "--validator.time_rate",
+        type=float,
+        help="The time period of one ephoch in the validator side",
+        default=0,
+    )
 
     parser.add_argument(
         "--neuron.vpermit_tao_limit",
         type=int,
         help="The maximum number of TAO allowed to query a validator with a vpermit.",
-        default=4096,
+        default=85000,
     )
 
     parser.add_argument(
@@ -245,7 +256,27 @@ def add_validator_args(cls, parser):
         help="The name of the project where you are sending the new run.",
         default="opentensor-dev",
     )
+    
+    parser.add_argument(
+        "--neuron.synthetic_challenge_count",
+        type=int,
+        help="The miner challenge count for synthetic synapse at once",
+        default=25,
+    )
 
+    parser.add_argument(
+        "--neuron.organic_challenge_count",
+        type=int,
+        help="The miner challenge count for organic synapse at once",
+        default=50,
+    )
+    
+    parser.add_argument(
+        "--neuron.organic_query_count",
+        type=int,
+        help="The acutual number of miners when sends the organic synapse",
+        default=5,
+    )
 
 def config(cls):
     """
